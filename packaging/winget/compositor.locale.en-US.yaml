@@ -1,0 +1,25 @@
+PackageIdentifier: Compositor.Compositor
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Antigravity
+PublisherUrl: https://github.com/robbietilton/Compositor
+PublisherSupportUrl: https://github.com/robbietilton/Compositor/issues
+Author: Antigravity
+PackageName: Compositor
+PackageUrl: https://github.com/robbietilton/Compositor
+License: MIT
+LicenseUrl: https://github.com/robbietilton/Compositor/blob/main/LICENSE
+ShortDescription: High-performance GPU raster image editor
+Description: |
+  Compositor is a Photoshop-style image editor featuring tiled GPU compositing,
+  25 blend modes, non-destructive layer effects, smart selections, and live .comp
+  project syncing for desktop and AI workflows.
+Tags:
+  - image-editor
+  - photo-editing
+  - graphics
+  - compositing
+  - raster
+  - photoshop
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

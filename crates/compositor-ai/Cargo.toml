@@ -1,0 +1,14 @@
+[package]
+name = "compositor-ai"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+compositor-core = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "directml"] }

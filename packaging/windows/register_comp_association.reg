@@ -1,0 +1,29 @@
+Windows Registry Editor Version 5.00
+
+; Register .comp folder association with Compositor
+[HKEY_CURRENT_USER\Software\Classes\.comp]
+@="Compositor.Project"
+"Content Type"="application/x-compositor-project"
+
+[HKEY_CURRENT_USER\Software\Classes\Compositor.Project]
+@="Compositor Project Document"
+
+[HKEY_CURRENT_USER\Software\Classes\Compositor.Project\DefaultIcon]
+@="\"%LOCALAPPDATA%\\Programs\\Compositor\\Compositor.exe\",0"
+
+[HKEY_CURRENT_USER\Software\Classes\Compositor.Project\shell]
+@="open"
+
+[HKEY_CURRENT_USER\Software\Classes\Compositor.Project\shell\open]
+@="Open with Compositor"
+
+[HKEY_CURRENT_USER\Software\Classes\Compositor.Project\shell\open\command]
+@="\"%LOCALAPPDATA%\\Programs\\Compositor\\Compositor.exe\" \"%1\""
+
+; Add folder context menu entry for directories ending in .comp
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Compositor]
+@="Open in Compositor"
+"Icon"="\"%LOCALAPPDATA%\\Programs\\Compositor\\Compositor.exe\",0"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\Compositor\command]
+@="\"%LOCALAPPDATA%\\Programs\\Compositor\\Compositor.exe\" \"%1\""

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Compositor",
+  "version": "1.0.0",
+  "identifier": "com.compositor.editor",
+  "build": {
+    "frontendDist": "../../frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Compositor",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": [
+      "icons/icon.ico",
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/256x256.png"
+    ],
+    "shortDescription": "High-performance GPU image editor with full layer compositing",
+    "longDescription": "Compositor is a cross-platform raster graphics editor supporting tiled GPU compositing, 25 blend modes, non-destructive layer effects, smart selections, and live .comp project syncing.",
+    "fileAssociations": [
+      {
+        "ext": ["comp"],
+        "name": "Compositor Project",
+        "description": "Compositor Image Project Folder",
+        "role": "Editor"
+      }
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "http://timestamp.digicert.com",
+      "wix": {
+        "language": "en-US"
+      },
+      "nsis": {
+        "displayLanguageSelector": false,
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "compositor-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+windows = { workspace = true }
+compositor-pixel = { workspace = true }
+fast_image_resize = { workspace = true }
+
+[dev-dependencies]
+image = { workspace = true }

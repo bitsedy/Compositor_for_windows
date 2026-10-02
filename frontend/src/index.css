@@ -1,0 +1,73 @@
+:root {
+  --bg-app: #1e1e1e;
+  --bg-panel: #252526;
+  --bg-panel-header: #2d2d2d;
+  --bg-input: #3c3c3c;
+  --bg-active: #094771;
+  --bg-hover: #37373d;
+  --border-color: #3f3f46;
+  --text-main: #cccccc;
+  --text-muted: #858585;
+  --text-bright: #ffffff;
+  --accent: #007acc;
+  --accent-hover: #1f8ad2;
+  --slider-track: #474747;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body, html, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 12px;
+}
+
+button {
+  background: none;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+input, select {
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-color);
+  color: var(--text-bright);
+  font-family: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  outline: none;
+}
+
+input:focus, select:focus {
+  border-color: var(--accent);
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

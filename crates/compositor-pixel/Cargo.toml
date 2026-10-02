@@ -1,0 +1,17 @@
+[package]
+name = "compositor-pixel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bytemuck = { workspace = true }
+fast_image_resize = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+
+[build-dependencies]
+cc = "1.1"

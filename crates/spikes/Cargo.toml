@@ -1,0 +1,22 @@
+[package]
+name = "spikes"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+compositor-core = { workspace = true }
+compositor-pixel = { workspace = true }
+compositor-gpu = { workspace = true }
+compositor-ai = { workspace = true }
+wgpu = { workspace = true }
+winit = { workspace = true }
+windows = { workspace = true }
+raw-window-handle = { workspace = true }
+glam = { workspace = true }
+bytemuck = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }
