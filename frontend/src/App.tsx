@@ -19,6 +19,9 @@ import { ExportModal } from './components/modals/ExportModal';
 
 import { ToolKind, LayerItem, BrushSettings, PaletteColor, BlendMode } from './types';
 
+// ---------------------------------------------------------------------------
+// History snapshot type
+// ---------------------------------------------------------------------------
 interface HistoryEntry {
   name: string;
   docWidth: number;
@@ -28,30 +31,34 @@ interface HistoryEntry {
   canvases: Map<string, HTMLCanvasElement>;
 }
 
-// Helpers to clone canvases for immutable history snapshots
+// ---------------------------------------------------------------------------
+// Deep-clone a single canvas (preserves pixel data)
+// ---------------------------------------------------------------------------
 const cloneCanvas = (src: HTMLCanvasElement): HTMLCanvasElement => {
   const copy = document.createElement('canvas');
   copy.width = src.width;
   copy.height = src.height;
   const ctx = copy.getContext('2d');
-  if (ctx) {
-    ctx.drawImage(src, 0, 0);
-  }
+  if (ctx) ctx.drawImage(src, 0, 0);
   return copy;
 };
 
+// ---------------------------------------------------------------------------
+// Deep-clone an entire layer canvas map
+// ---------------------------------------------------------------------------
 const cloneCanvasesMap = (map: Map<string, HTMLCanvasElement>): Map<string, HTMLCanvasElement> => {
   const copy = new Map<string, HTMLCanvasElement>();
-  map.forEach((c, id) => {
-    copy.set(id, cloneCanvas(c));
-  });
+  map.forEach((c, id) => copy.set(id, cloneCanvas(c)));
   return copy;
 };
 
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
 export const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Active Tool & Settings
+  // ── Tool & Brush ──────────────────────────────────────────────────────────
   const [activeTool, setActiveTool] = useState<ToolKind>('brush');
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({
     size: 30,
@@ -64,21 +71,11 @@ export const App: React.FC = () => {
     pressureOpacity: false,
   });
 
-  // Color Swatches
-  const [foregroundColor, setForegroundColor] = useState<PaletteColor>({
-    red: 0,
-    green: 0,
-    blue: 0,
-    alpha: 1,
-  });
-  const [backgroundColor, setBackgroundColor] = useState<PaletteColor>({
-    red: 1,
-    green: 1,
-    blue: 1,
-    alpha: 1,
-  });
+  // ── Colors ────────────────────────────────────────────────────────────────
+  const [foregroundColor, setForegroundColor] = useState<PaletteColor>({ red: 0, green: 0, blue: 0, alpha: 1 });
+  const [backgroundColor, setBackgroundColor] = useState<PaletteColor>({ red: 1, green: 1, blue: 1, alpha: 1 });
 
-  // Documents & Dimensions
+  // ── Document ──────────────────────────────────────────────────────────────
   const [tabs, setTabs] = useState<{ id: string; name: string; isDirty?: boolean }[]>([
     { id: 'doc-1', name: 'Untitled-1', isDirty: false },
   ]);
@@ -89,13 +86,14 @@ export const App: React.FC = () => {
   const [panX, setPanX] = useState(80);
   const [panY, setPanY] = useState(40);
 
-  // Selection
+  // ── Selection ─────────────────────────────────────────────────────────────
   const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
 
-  // Drag and drop state
-  const [isWindowDragging, setIsWindowDragging] = useState(false);
+  // ── Drag-and-drop: use a counter so nested enter/leave events don't flicker
+  // counter > 0  → overlay visible
+  const [dragCounter, setDragCounter] = useState(0);
 
-  // Layers State
+  // ── Layers ────────────────────────────────────────────────────────────────
   const [layers, setLayers] = useState<LayerItem[]>([
     {
       id: 'layer-1',
@@ -110,15 +108,21 @@ export const App: React.FC = () => {
     },
   ]);
   const [activeLayerId, setActiveLayerId] = useState('layer-1');
-
-  // Layer Bitmaps
   const [layerCanvasesMap, setLayerCanvasesMap] = useState<Map<string, HTMLCanvasElement>>(new Map());
 
-  // Real Historical Snapshots for True Undo / Redo
+  // ── History stack (immutable pixel snapshots) ─────────────────────────────
+  // We store the stack in a ref so functional-updates inside setState can
+  // always read the latest value without stale-closure issues.
   const [historyStack, setHistoryStack] = useState<HistoryEntry[]>([]);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyStackRef = useRef<HistoryEntry[]>([]);
+  const historyIndexRef = useRef<number>(-1);
 
-  // Modals Open State
+  // Keep refs in sync with state
+  useEffect(() => { historyStackRef.current = historyStack; }, [historyStack]);
+  useEffect(() => { historyIndexRef.current = historyIndex; }, [historyIndex]);
+
+  // ── Modals ────────────────────────────────────────────────────────────────
   const [isCurvesOpen, setCurvesOpen] = useState(false);
   const [isLevelsOpen, setLevelsOpen] = useState(false);
   const [isHueSatOpen, setHueSatOpen] = useState(false);
@@ -127,7 +131,7 @@ export const App: React.FC = () => {
   const [isNewDocOpen, setNewDocOpen] = useState(false);
   const [isExportOpen, setExportOpen] = useState(false);
 
-  // IPC helpers with Tauri
+  // ── Tauri IPC ─────────────────────────────────────────────────────────────
   const invokeTauri = async (cmd: string, args?: any) => {
     if ((window as any).__TAURI_INTERNALS__) {
       try {
@@ -139,32 +143,51 @@ export const App: React.FC = () => {
     }
   };
 
-  // Push a state snapshot to the history stack
+  // ── Push history snapshot ─────────────────────────────────────────────────
+  // CRITICAL: reads historyIndexRef.current (always fresh) to avoid stale closure.
   const pushHistorySnapshot = useCallback(
-    (name: string, customMap?: Map<string, HTMLCanvasElement>, customLayers?: LayerItem[]) => {
-      const mapToSave = customMap || layerCanvasesMap;
-      const layersToSave = customLayers || layers;
-      const entry: HistoryEntry = {
-        name,
-        docWidth,
-        docHeight,
-        layers: layersToSave.map((l) => ({ ...l })),
-        activeLayerId,
-        canvases: cloneCanvasesMap(mapToSave),
-      };
+    (
+      name: string,
+      overrideMap?: Map<string, HTMLCanvasElement>,
+      overrideLayers?: LayerItem[],
+      overrideWidth?: number,
+      overrideHeight?: number,
+      overrideActiveLayerId?: string,
+    ) => {
+      // Snapshot the currently-active state (or overrides for atomic compound ops)
+      // We read from the ref so we always get the latest index even in batched calls.
+      const currentIndex = historyIndexRef.current;
 
       setHistoryStack((prev) => {
-        const trimmed = prev.slice(0, historyIndex + 1);
+        // Trim any future (redo) states
+        const trimmed = prev.slice(0, currentIndex + 1);
+
+        // Build the snapshot from overrides or current state; we deliberately
+        // capture the React state values via closure at call-time, which is correct.
+        const entry: HistoryEntry = {
+          name,
+          docWidth: overrideWidth ?? docWidth,
+          docHeight: overrideHeight ?? docHeight,
+          layers: (overrideLayers ?? layers).map((l) => ({ ...l })),
+          activeLayerId: overrideActiveLayerId ?? activeLayerId,
+          canvases: cloneCanvasesMap(overrideMap ?? layerCanvasesMap),
+        };
+
         const next = [...trimmed, entry];
-        if (next.length > 50) next.shift();
+        if (next.length > 50) next.shift(); // cap at 50 steps
+        historyStackRef.current = next;
         return next;
       });
-      setHistoryIndex((prev) => Math.min(prev + 1, 49));
+
+      const nextIndex = Math.min(currentIndex + 1, 49);
+      historyIndexRef.current = nextIndex;
+      setHistoryIndex(nextIndex);
     },
-    [docWidth, docHeight, layers, activeLayerId, layerCanvasesMap, historyIndex]
+    // Deps: all current state values that get snapshot'd by default
+    [docWidth, docHeight, layers, activeLayerId, layerCanvasesMap],
   );
 
-  // Initialize canvas on app startup
+  // ── Initialize default canvas on app startup ──────────────────────────────
   useEffect(() => {
     const bgCanvas = document.createElement('canvas');
     bgCanvas.width = 1920;
@@ -174,11 +197,10 @@ export const App: React.FC = () => {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, 1920, 1080);
     }
-    const map = new Map();
+    const map = new Map<string, HTMLCanvasElement>();
     map.set('layer-1', bgCanvas);
     setLayerCanvasesMap(map);
 
-    // Initial center
     const availW = window.innerWidth - 360;
     const availH = window.innerHeight - 150;
     const fitZ = Math.min(availW / 1920, availH / 1080, 0.6);
@@ -206,11 +228,14 @@ export const App: React.FC = () => {
       activeLayerId: 'layer-1',
       canvases: cloneCanvasesMap(map),
     };
+    historyStackRef.current = [initialEntry];
+    historyIndexRef.current = 0;
     setHistoryStack([initialEntry]);
     setHistoryIndex(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Image Loading Function (Core Solution for Bringing in Images)
+  // ── Open / load image file ────────────────────────────────────────────────
   const openImageFile = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -225,14 +250,11 @@ export const App: React.FC = () => {
         setDocWidth(w);
         setDocHeight(h);
 
-        // Create new layer canvas with image pixels
         const lCanvas = document.createElement('canvas');
         lCanvas.width = w;
         lCanvas.height = h;
         const ctx = lCanvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0);
-        }
+        if (ctx) ctx.drawImage(img, 0, 0);
 
         const newLayerId = `layer-${Date.now()}`;
         const newLayer: LayerItem = {
@@ -249,6 +271,8 @@ export const App: React.FC = () => {
 
         const newMap = new Map<string, HTMLCanvasElement>();
         newMap.set(newLayerId, lCanvas);
+
+        // Sync state atomically
         setLayerCanvasesMap(newMap);
         setLayers([newLayer]);
         setActiveLayerId(newLayerId);
@@ -261,10 +285,11 @@ export const App: React.FC = () => {
         setPanX(Math.round((availW - w * fitZ) / 2));
         setPanY(Math.round((availH - h * fitZ) / 2));
 
-        setTabs([{ id: `doc-${Date.now()}`, name: file.name, isDirty: false }]);
+        const tabName = file.name;
+        setTabs([{ id: `doc-${Date.now()}`, name: tabName, isDirty: false }]);
         setSelection(null);
 
-        // Initialize history stack with this new image
+        // Initialize a fresh history stack for this document
         const entry: HistoryEntry = {
           name: `Open ${file.name}`,
           docWidth: w,
@@ -273,77 +298,67 @@ export const App: React.FC = () => {
           activeLayerId: newLayerId,
           canvases: cloneCanvasesMap(newMap),
         };
+        historyStackRef.current = [entry];
+        historyIndexRef.current = 0;
         setHistoryStack([entry]);
         setHistoryIndex(0);
 
-        // Synchronize with Rust engine
         invokeTauri('open_image_file', { path: (file as any).path || file.name });
       };
       img.src = dataUrl;
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, []); // stable – uses only setters and refs
 
-  // Handle file input change
+  // ── File input change handler ─────────────────────────────────────────────
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       openImageFile(e.target.files[0]);
+      // Reset so the same file can be re-opened
+      e.target.value = '';
     }
   };
 
-  // Window-Wide Drag and Drop Listener (Automatic Drag and Drop)
+  // ── Window-wide drag-and-drop (FIXED: counter-based, not boolean) ─────────
+  // Using a dragCounter instead of a boolean prevents flickering when the mouse
+  // crosses child element boundaries inside WebView2.  dragenter increments,
+  // dragleave decrements; overlay is shown when counter > 0.
   useEffect(() => {
-    const handleDragOver = (e: DragEvent) => {
+    const onDragEnter = (e: DragEvent) => {
       e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = 'copy';
-      }
-      setIsWindowDragging(true);
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      setDragCounter((c) => c + 1);
     };
-
-    const handleDragEnter = (e: DragEvent) => {
+    const onDragOver = (e: DragEvent) => {
       e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer) {
-        e.dataTransfer.dropEffect = 'copy';
-      }
-      setIsWindowDragging(true);
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
     };
-
-    const handleDragLeave = (e: DragEvent) => {
+    const onDragLeave = (e: DragEvent) => {
       e.preventDefault();
-      e.stopPropagation();
-      if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
-        setIsWindowDragging(false);
-      }
+      setDragCounter((c) => Math.max(0, c - 1));
     };
-
-    const handleDrop = (e: DragEvent) => {
+    const onDrop = (e: DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setIsWindowDragging(false);
-
+      setDragCounter(0); // always reset on drop
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-        const file = e.dataTransfer.files[0];
-        openImageFile(file);
+        openImageFile(e.dataTransfer.files[0]);
       }
     };
 
-    window.addEventListener('dragover', handleDragOver);
-    window.addEventListener('dragenter', handleDragEnter);
-    window.addEventListener('dragleave', handleDragLeave);
-    window.addEventListener('drop', handleDrop);
-
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
     return () => {
-      window.removeEventListener('dragover', handleDragOver);
-      window.removeEventListener('dragenter', handleDragEnter);
-      window.removeEventListener('dragleave', handleDragLeave);
-      window.removeEventListener('drop', handleDrop);
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
     };
   }, [openImageFile]);
 
-  // Global Paste listener (paste image from clipboard)
+  // ── Clipboard paste (image) ───────────────────────────────────────────────
   useEffect(() => {
     const handlePaste = (e: ClipboardEvent) => {
       if (e.clipboardData && e.clipboardData.items) {
@@ -351,10 +366,7 @@ export const App: React.FC = () => {
           const item = e.clipboardData.items[i];
           if (item.type.indexOf('image') !== -1) {
             const file = item.getAsFile();
-            if (file) {
-              openImageFile(file);
-              break;
-            }
+            if (file) { openImageFile(file); break; }
           }
         }
       }
@@ -363,27 +375,37 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('paste', handlePaste);
   }, [openImageFile]);
 
-  // TRUE UNDO / REDO: Restores physical canvas pixels and layer states
+  // ── TRUE UNDO (restores physical pixel buffers) ───────────────────────────
   const handleUndo = useCallback(() => {
-    if (historyIndex <= 0) return;
-    const targetIdx = historyIndex - 1;
-    const targetState = historyStack[targetIdx];
+    const currentIdx = historyIndexRef.current;
+    if (currentIdx <= 0) return;
+
+    const targetIdx = currentIdx - 1;
+    const targetState = historyStackRef.current[targetIdx];
     if (!targetState) return;
 
+    // Restore all state from snapshot
     setDocWidth(targetState.docWidth);
     setDocHeight(targetState.docHeight);
     setLayers(targetState.layers.map((l) => ({ ...l })));
     setActiveLayerId(targetState.activeLayerId);
+    // Clone so CanvasContainer gets a new Map reference and re-renders
     setLayerCanvasesMap(cloneCanvasesMap(targetState.canvases));
+
+    historyIndexRef.current = targetIdx;
     setHistoryIndex(targetIdx);
 
     invokeTauri('undo');
-  }, [historyIndex, historyStack]);
+  }, []); // stable – reads only refs
 
+  // ── TRUE REDO ─────────────────────────────────────────────────────────────
   const handleRedo = useCallback(() => {
-    if (historyIndex >= historyStack.length - 1) return;
-    const targetIdx = historyIndex + 1;
-    const targetState = historyStack[targetIdx];
+    const currentIdx = historyIndexRef.current;
+    const stack = historyStackRef.current;
+    if (currentIdx >= stack.length - 1) return;
+
+    const targetIdx = currentIdx + 1;
+    const targetState = stack[targetIdx];
     if (!targetState) return;
 
     setDocWidth(targetState.docWidth);
@@ -391,14 +413,22 @@ export const App: React.FC = () => {
     setLayers(targetState.layers.map((l) => ({ ...l })));
     setActiveLayerId(targetState.activeLayerId);
     setLayerCanvasesMap(cloneCanvasesMap(targetState.canvases));
+
+    historyIndexRef.current = targetIdx;
     setHistoryIndex(targetIdx);
 
     invokeTauri('redo');
-  }, [historyIndex, historyStack]);
+  }, []); // stable – reads only refs
 
-  const handleJumpToHistory = (idx: number) => {
-    if (idx < 0 || idx >= historyStack.length) return;
-    const targetState = historyStack[idx];
+  // ── Jump to arbitrary history step (from HistoryPanel click) ─────────────
+  // FIXED: panel index is relative to historyStack[0..historyStack.length-1],
+  // but HistoryPanel shows undoSteps (0..historyIndex) with local idx 0-based.
+  // We map: global stack index = idx (since undoSteps = historyStack.slice(0, historyIndex+1))
+  const handleJumpToHistory = useCallback((panelIdx: number) => {
+    // panelIdx is the index into undoSteps[], which maps 1:1 to historyStack[panelIdx]
+    const stack = historyStackRef.current;
+    if (panelIdx < 0 || panelIdx >= stack.length) return;
+    const targetState = stack[panelIdx];
     if (!targetState) return;
 
     setDocWidth(targetState.docWidth);
@@ -406,35 +436,39 @@ export const App: React.FC = () => {
     setLayers(targetState.layers.map((l) => ({ ...l })));
     setActiveLayerId(targetState.activeLayerId);
     setLayerCanvasesMap(cloneCanvasesMap(targetState.canvases));
-    setHistoryIndex(idx);
-  };
 
-  const handleSave = () => {
-    invokeTauri('save_project');
-  };
+    historyIndexRef.current = panelIdx;
+    setHistoryIndex(panelIdx);
+  }, []);
 
-  const handleSwapColors = () => {
+  // ── Color utilities ───────────────────────────────────────────────────────
+  const handleSwapColors = useCallback(() => {
     const tmp = foregroundColor;
     setForegroundColor(backgroundColor);
     setBackgroundColor(tmp);
     invokeTauri('set_colors', { fg: backgroundColor, bg: tmp });
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [foregroundColor, backgroundColor]);
 
-  const handleResetColors = () => {
+  const handleResetColors = useCallback(() => {
     const fg = { red: 0, green: 0, blue: 0, alpha: 1 };
     const bg = { red: 1, green: 1, blue: 1, alpha: 1 };
     setForegroundColor(fg);
     setBackgroundColor(bg);
     invokeTauri('set_colors', { fg, bg });
-  };
+  }, []);
 
-  const handleSelectTool = (tool: ToolKind) => {
+  const handleSelectTool = useCallback((tool: ToolKind) => {
     setActiveTool(tool);
     invokeTauri('set_active_tool', { tool });
-  };
+  }, []);
 
-  // Filter and Adjustment application directly on pixel buffer
-  const handleApplyFilter = (kind: string, settings?: any) => {
+  const handleSave = useCallback(() => {
+    invokeTauri('save_project');
+  }, []);
+
+  // ── Filter / Adjustment application (direct pixel transforms) ─────────────
+  const handleApplyFilter = useCallback((kind: string, settings?: any) => {
     const lCanvas = layerCanvasesMap.get(activeLayerId);
     if (!lCanvas) return;
     const ctx = lCanvas.getContext('2d');
@@ -452,9 +486,7 @@ export const App: React.FC = () => {
     } else if (kind === 'Black & White') {
       for (let i = 0; i < data.length; i += 4) {
         const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        data[i] = gray;
-        data[i + 1] = gray;
-        data[i + 2] = gray;
+        data[i] = gray; data[i + 1] = gray; data[i + 2] = gray;
       }
     } else if (kind === 'Add Noise') {
       const amt = (settings?.amount || 15) * 2.55;
@@ -471,6 +503,89 @@ export const App: React.FC = () => {
         data[i + 1] = Math.min(255, Math.max(0, data[i + 1] * exp));
         data[i + 2] = Math.min(255, Math.max(0, data[i + 2] * exp));
       }
+    } else if (kind === 'Hue/Saturation') {
+      // Simple hue-rotation via HSL conversion
+      const hueShift = (settings?.hue || 0) / 360;
+      const satMult = 1 + (settings?.saturation || 0) / 100;
+      const lightAdd = (settings?.lightness || 0) / 100;
+      const rgbToHsl = (r: number, g: number, b: number) => {
+        r /= 255; g /= 255; b /= 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b);
+        let h = 0, s = 0, l = (max + min) / 2;
+        if (max !== min) {
+          const d = max - min;
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          switch (max) {
+            case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+            case g: h = (b - r) / d + 2; break;
+            case b: h = (r - g) / d + 4; break;
+          }
+          h /= 6;
+        }
+        return [h, s, l];
+      };
+      const hue2rgb = (p: number, q: number, t: number) => {
+        if (t < 0) t += 1; if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+      };
+      const hslToRgb = (h: number, s: number, l: number) => {
+        if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        return [
+          Math.round(hue2rgb(p, q, h + 1/3) * 255),
+          Math.round(hue2rgb(p, q, h) * 255),
+          Math.round(hue2rgb(p, q, h - 1/3) * 255),
+        ];
+      };
+      for (let i = 0; i < data.length; i += 4) {
+        let [h, s, l] = rgbToHsl(data[i], data[i + 1], data[i + 2]);
+        h = (h + hueShift) % 1;
+        s = Math.min(1, Math.max(0, s * satMult));
+        l = Math.min(1, Math.max(0, l + lightAdd));
+        const [r, g, b] = hslToRgb(h, s, l);
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      }
+    } else if (kind === 'Levels') {
+      const inBlack = settings?.inputBlack ?? 0;
+      const inWhite = settings?.inputWhite ?? 255;
+      const gamma = settings?.gamma ?? 1.0;
+      const outBlack = settings?.outputBlack ?? 0;
+      const outWhite = settings?.outputWhite ?? 255;
+      const range = inWhite - inBlack || 1;
+      for (let i = 0; i < data.length; i += 4) {
+        for (let ch = 0; ch < 3; ch++) {
+          let v = (Math.min(255, Math.max(0, data[i + ch] - inBlack)) / range);
+          v = Math.pow(v, 1 / gamma);
+          data[i + ch] = Math.min(255, Math.max(0, Math.round(outBlack + v * (outWhite - outBlack))));
+        }
+      }
+    } else if (kind === 'Curves') {
+      // Linearize the curve points array into a 256-entry LUT
+      const pts: [number, number][] = settings?.points || [[0, 0], [255, 255]];
+      const lut = new Uint8Array(256);
+      for (let x = 0; x < 256; x++) {
+        // Find surrounding control points and lerp
+        let y = x;
+        for (let j = 0; j < pts.length - 1; j++) {
+          const [x0, y0] = pts[j];
+          const [x1, y1] = pts[j + 1];
+          if (x >= x0 && x <= x1) {
+            const t = (x - x0) / (x1 - x0 || 1);
+            y = Math.round(y0 + t * (y1 - y0));
+            break;
+          }
+        }
+        lut[x] = Math.min(255, Math.max(0, y));
+      }
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = lut[data[i]];
+        data[i + 1] = lut[data[i + 1]];
+        data[i + 2] = lut[data[i + 2]];
+      }
     }
 
     ctx.putImageData(imgData, 0, 0);
@@ -481,136 +596,192 @@ export const App: React.FC = () => {
 
     pushHistorySnapshot(kind, newMap);
     invokeTauri('apply_filter_command', { kind, settings: settings || {} });
-  };
+  }, [activeLayerId, layerCanvasesMap, pushHistorySnapshot]);
 
-  const handleOpenFilterOrAdj = (kind: string) => {
+  const handleOpenFilterOrAdj = useCallback((kind: string) => {
     if (kind === 'Curves') setCurvesOpen(true);
     else if (kind === 'Levels') setLevelsOpen(true);
     else if (kind === 'Hue/Saturation') setHueSatOpen(true);
     else if (kind === 'Camera Raw') setCameraRawOpen(true);
-    else if (kind === 'Invert' || kind === 'Black & White') {
-      handleApplyFilter(kind);
-    } else {
-      setActiveFilterKind(kind);
-    }
-  };
+    else if (kind === 'Invert' || kind === 'Black & White') handleApplyFilter(kind);
+    else setActiveFilterKind(kind);
+  }, [handleApplyFilter]);
 
-  // Export full composite image
-  const handleExport = (format: string, quality: number) => {
+  // ── Export full composite ─────────────────────────────────────────────────
+  const handleExport = useCallback((format: string, quality: number) => {
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = docWidth;
     exportCanvas.height = docHeight;
     const ctx = exportCanvas.getContext('2d');
     if (!ctx) return;
 
-    if (format === 'jpeg') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, docWidth, docHeight);
-    }
+    if (format === 'jpeg') { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, docWidth, docHeight); }
 
-    // Composite all visible layers in stack order
     for (const layer of layers) {
       if (!layer.isVisible) continue;
       const lCanvas = layerCanvasesMap.get(layer.id);
       if (!lCanvas) continue;
+      ctx.save();
       ctx.globalAlpha = layer.opacity;
-      ctx.drawImage(lCanvas, 0, 0, docWidth, docHeight);
+      // Draw at exact position (1:1 size – layer canvas already matches document)
+      ctx.drawImage(lCanvas, 0, 0);
+      ctx.restore();
     }
 
-    const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+    const mime = format === 'jpeg' ? 'image/jpeg' : format === 'png' ? 'image/png' : 'image/webp';
     const dataUrl = exportCanvas.toDataURL(mime, quality / 100);
-
     const link = document.createElement('a');
     link.download = `${tabs[0]?.name || 'Artwork'}.${format === 'jpeg' ? 'jpg' : format}`;
     link.href = dataUrl;
     link.click();
-
     invokeTauri('export_image', { format, quality });
-  };
+  }, [docWidth, docHeight, layers, layerCanvasesMap, tabs]);
 
-  // Keyboard Shortcuts (Photoshop parity)
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement) return;
+      const ctrl = e.ctrlKey || e.metaKey;
 
-      const ctrlOrCmd = e.ctrlKey || e.metaKey;
-
-      if (ctrlOrCmd && e.key.toLowerCase() === 'z') {
-        if (e.shiftKey) handleRedo();
-        else handleUndo();
+      if (ctrl && e.key.toLowerCase() === 'z') {
         e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 'y') {
-        handleRedo();
-        e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 'o') {
-        fileInputRef.current?.click();
-        e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 's') {
-        handleSave();
-        e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 'n') {
-        setNewDocOpen(true);
-        e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 'a') {
-        setSelection({ x: 0, y: 0, width: docWidth, height: docHeight });
-        e.preventDefault();
-      } else if (ctrlOrCmd && e.key.toLowerCase() === 'd') {
-        setSelection(null);
-        e.preventDefault();
-      } else if (e.key.toLowerCase() === 'b') {
-        setActiveTool('brush');
-      } else if (e.key.toLowerCase() === 'v') {
-        setActiveTool('move');
-      } else if (e.key.toLowerCase() === 'm') {
-        setActiveTool('marquee_rect');
-      } else if (e.key.toLowerCase() === 'l') {
-        setActiveTool('lasso');
-      } else if (e.key.toLowerCase() === 'w') {
-        setActiveTool('wand');
-      } else if (e.key.toLowerCase() === 'e') {
-        setActiveTool('eraser');
-      } else if (e.key.toLowerCase() === 'i') {
-        setActiveTool('eyedropper');
-      } else if (e.key.toLowerCase() === 'x') {
-        handleSwapColors();
-      } else if (e.key.toLowerCase() === 'd') {
-        handleResetColors();
-      } else if (e.key === '[') {
-        setBrushSettings((s) => ({ ...s, size: Math.max(1, s.size - 5) }));
-      } else if (e.key === ']') {
-        setBrushSettings((s) => ({ ...s, size: Math.min(500, s.size + 5) }));
+        if (e.shiftKey) handleRedo(); else handleUndo();
+      } else if (ctrl && e.key.toLowerCase() === 'y') {
+        e.preventDefault(); handleRedo();
+      } else if (ctrl && e.key.toLowerCase() === 'o') {
+        e.preventDefault(); fileInputRef.current?.click();
+      } else if (ctrl && e.key.toLowerCase() === 's') {
+        e.preventDefault(); handleSave();
+      } else if (ctrl && e.key.toLowerCase() === 'n') {
+        e.preventDefault(); setNewDocOpen(true);
+      } else if (ctrl && e.key.toLowerCase() === 'a') {
+        e.preventDefault(); setSelection({ x: 0, y: 0, width: docWidth, height: docHeight });
+      } else if (ctrl && e.key.toLowerCase() === 'd') {
+        e.preventDefault(); setSelection(null);
+      } else if (!ctrl) {
+        switch (e.key.toLowerCase()) {
+          case 'b': setActiveTool('brush'); break;
+          case 'v': setActiveTool('move'); break;
+          case 'm': setActiveTool('marquee_rect'); break;
+          case 'l': setActiveTool('lasso'); break;
+          case 'w': setActiveTool('wand'); break;
+          case 'e': setActiveTool('eraser'); break;
+          case 'i': setActiveTool('eyedropper'); break;
+          case 'h': setActiveTool('hand'); break;
+          case 'x': handleSwapColors(); break;
+          case '[': setBrushSettings((s) => ({ ...s, size: Math.max(1, s.size - 5) })); break;
+          case ']': setBrushSettings((s) => ({ ...s, size: Math.min(500, s.size + 5) })); break;
+        }
       }
     };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo, handleSave, handleSwapColors, docWidth, docHeight]);
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, docWidth, docHeight]);
+  // ── Layer canvas update (called from CanvasContainer on every brush dab) ──
+  const handleLayerCanvasUpdate = useCallback((layerId: string, updatedCanvas: HTMLCanvasElement) => {
+    setLayerCanvasesMap((prev) => {
+      const next = new Map(prev);
+      next.set(layerId, updatedCanvas);
+      return next;
+    });
+  }, []);
 
-  const handleLayerCanvasUpdate = (layerId: string, updatedCanvas: HTMLCanvasElement) => {
+  // ── Layer add / delete / group helpers ───────────────────────────────────
+  const handleAddLayer = useCallback(() => {
+    const newId = `layer-${Date.now()}`;
+    const newLayer: LayerItem = {
+      id: newId,
+      name: `Layer ${layers.length + 1}`,
+      isVisible: true,
+      isGroup: false,
+      opacity: 1.0,
+      blendMode: 'Normal',
+      hasMask: false,
+      maskEnabled: false,
+      hasEffects: false,
+    };
+    const newCanvas = document.createElement('canvas');
+    newCanvas.width = docWidth;
+    newCanvas.height = docHeight;
     const newMap = new Map(layerCanvasesMap);
-    newMap.set(layerId, updatedCanvas);
+    newMap.set(newId, newCanvas);
     setLayerCanvasesMap(newMap);
-  };
+    const nextLayers = [newLayer, ...layers];
+    setLayers(nextLayers);
+    setActiveLayerId(newId);
+    pushHistorySnapshot('New Layer', newMap, nextLayers);
+    invokeTauri('add_layer');
+  }, [docWidth, docHeight, layers, layerCanvasesMap, pushHistorySnapshot]);
 
-  // Derive undo and redo lists for HistoryPanel
+  const handleAddGroup = useCallback(() => {
+    const newId = `group-${Date.now()}`;
+    const newGroup: LayerItem = {
+      id: newId,
+      name: `Group ${layers.length + 1}`,
+      isVisible: true,
+      isGroup: true,
+      opacity: 1.0,
+      blendMode: 'Normal',
+      hasMask: false,
+      maskEnabled: false,
+      hasEffects: false,
+    };
+    const nextLayers = [newGroup, ...layers];
+    setLayers(nextLayers);
+    setActiveLayerId(newId);
+    pushHistorySnapshot('New Group', undefined, nextLayers);
+    invokeTauri('add_group');
+  }, [layers, pushHistorySnapshot]);
+
+  const handleDeleteLayer = useCallback((id: string) => {
+    if (layers.length <= 1) return;
+    const nextLayers = layers.filter((l) => l.id !== id);
+    setLayers(nextLayers);
+    setActiveLayerId(nextLayers[0]?.id || '');
+    const newMap = new Map(layerCanvasesMap);
+    newMap.delete(id);
+    setLayerCanvasesMap(newMap);
+    pushHistorySnapshot('Delete Layer', newMap, nextLayers);
+    invokeTauri('delete_layer', { id });
+  }, [layers, layerCanvasesMap, pushHistorySnapshot]);
+
+  const handleToggleVisibility = useCallback((id: string) => {
+    const nextLayers = layers.map((l) => (l.id === id ? { ...l, isVisible: !l.isVisible } : l));
+    setLayers(nextLayers);
+    pushHistorySnapshot('Toggle Layer Visibility', undefined, nextLayers);
+    invokeTauri('toggle_layer_visibility', { id });
+  }, [layers, pushHistorySnapshot]);
+
+  const handleChangeBlendMode = useCallback((id: string, blendMode: BlendMode) => {
+    const nextLayers = layers.map((l) => (l.id === id ? { ...l, blendMode } : l));
+    setLayers(nextLayers);
+    pushHistorySnapshot(`Blend Mode: ${blendMode}`, undefined, nextLayers);
+    invokeTauri('set_layer_blend_mode', { id, blendMode });
+  }, [layers, pushHistorySnapshot]);
+
+  const handleChangeOpacity = useCallback((id: string, opacity: number) => {
+    const nextLayers = layers.map((l) => (l.id === id ? { ...l, opacity } : l));
+    setLayers(nextLayers);
+    pushHistorySnapshot('Change Layer Opacity', undefined, nextLayers);
+    invokeTauri('set_layer_opacity', { id, opacity });
+  }, [layers, pushHistorySnapshot]);
+
+  // ── Derive undo / redo step lists for HistoryPanel ───────────────────────
+  // undoSteps[i] maps to historyStack[i] – same index, no offset needed.
   const undoSteps = historyStack.slice(0, historyIndex + 1).map((e) => e.name);
   const redoSteps = historyStack.slice(historyIndex + 1).map((e) => e.name);
 
+  const isWindowDragging = dragCounter > 0;
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        width: '100vw',
-        height: '100vh',
-        overflow: 'hidden',
-      }}
-    >
-      {/* Hidden File Input for Native Open Dialog */}
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', overflow: 'hidden' }}>
+      {/* Hidden native file picker */}
       <input
         type="file"
         ref={fileInputRef}
-        accept="image/*,.comp,.psd,.psb,.tiff,.tif,.svg,.raw"
+        accept="image/*,.comp,.psd,.psb,.tiff,.tif,.svg,.raw,.heic,.heif"
         style={{ display: 'none' }}
         onChange={handleFileInputChange}
       />
@@ -651,14 +822,12 @@ export const App: React.FC = () => {
         onCloseTab={(id) => {
           if (tabs.length > 1) {
             setTabs(tabs.filter((t) => t.id !== id));
-            if (activeTabId === id) {
-              setActiveTabId(tabs[0].id);
-            }
+            if (activeTabId === id) setActiveTabId(tabs[0].id);
           }
         }}
       />
 
-      {/* 4. Main Work Area (Tools + Canvas + Right Sidebar) */}
+      {/* 4. Main Work Area */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         {/* Left Tools Palette */}
         <ToolsPalette
@@ -686,21 +855,14 @@ export const App: React.FC = () => {
           onZoomChange={setZoom}
           panX={panX}
           panY={panY}
-          onPanChange={(px, py) => {
-            setPanX(px);
-            setPanY(py);
-          }}
+          onPanChange={(px, py) => { setPanX(px); setPanY(py); }}
           layerCanvases={layerCanvasesMap}
           onLayerCanvasUpdate={handleLayerCanvasUpdate}
           onColorSample={setForegroundColor}
           selection={selection}
           onSelectionChange={setSelection}
-          onDropFiles={(files) => {
-            if (files.length > 0) openImageFile(files[0]);
-          }}
-          onAddHistoryStep={(name) => {
-            pushHistorySnapshot(name);
-          }}
+          onDropFiles={(files) => { if (files.length > 0) openImageFile(files[0]); }}
+          onAddHistoryStep={(name) => pushHistorySnapshot(name)}
         />
 
         {/* Right Sidebar */}
@@ -713,98 +875,22 @@ export const App: React.FC = () => {
             backgroundColor: 'var(--bg-panel)',
           }}
         >
-          {/* Adjustments Presets */}
           <AdjustmentsPanel onAddAdjustment={handleOpenFilterOrAdj} />
 
-          {/* Layers Panel */}
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <LayersPanel
               layers={layers}
               activeLayerId={activeLayerId}
               onSelectLayer={setActiveLayerId}
-              onToggleVisibility={(id) => {
-                const nextLayers = layers.map((l) => (l.id === id ? { ...l, isVisible: !l.isVisible } : l));
-                setLayers(nextLayers);
-                pushHistorySnapshot('Toggle Layer Visibility', undefined, nextLayers);
-                invokeTauri('toggle_layer_visibility', { id });
-              }}
-              onChangeBlendMode={(id, blendMode: BlendMode) => {
-                const nextLayers = layers.map((l) => (l.id === id ? { ...l, blendMode } : l));
-                setLayers(nextLayers);
-                pushHistorySnapshot(`Blend Mode: ${blendMode}`, undefined, nextLayers);
-                invokeTauri('set_layer_blend_mode', { id, blendMode });
-              }}
-              onChangeOpacity={(id, opacity) => {
-                const nextLayers = layers.map((l) => (l.id === id ? { ...l, opacity } : l));
-                setLayers(nextLayers);
-                pushHistorySnapshot('Change Layer Opacity', undefined, nextLayers);
-                invokeTauri('set_layer_opacity', { id, opacity });
-              }}
-              onAddLayer={() => {
-                const newId = `layer-${Date.now()}`;
-                const newLayer: LayerItem = {
-                  id: newId,
-                  name: `Layer ${layers.length + 1}`,
-                  isVisible: true,
-                  isGroup: false,
-                  opacity: 1.0,
-                  blendMode: 'Normal',
-                  hasMask: false,
-                  maskEnabled: false,
-                  hasEffects: false,
-                };
-
-                const newCanvas = document.createElement('canvas');
-                newCanvas.width = docWidth;
-                newCanvas.height = docHeight;
-
-                const newMap = new Map(layerCanvasesMap);
-                newMap.set(newId, newCanvas);
-                setLayerCanvasesMap(newMap);
-
-                const nextLayers = [newLayer, ...layers];
-                setLayers(nextLayers);
-                setActiveLayerId(newId);
-
-                pushHistorySnapshot('New Layer', newMap, nextLayers);
-                invokeTauri('add_layer');
-              }}
-              onAddGroup={() => {
-                const newId = `group-${Date.now()}`;
-                const newGroup: LayerItem = {
-                  id: newId,
-                  name: `Group ${layers.length + 1}`,
-                  isVisible: true,
-                  isGroup: true,
-                  opacity: 1.0,
-                  blendMode: 'Normal',
-                  hasMask: false,
-                  maskEnabled: false,
-                  hasEffects: false,
-                };
-                const nextLayers = [newGroup, ...layers];
-                setLayers(nextLayers);
-                setActiveLayerId(newId);
-                pushHistorySnapshot('New Group', undefined, nextLayers);
-                invokeTauri('add_group');
-              }}
-              onDeleteLayer={(id) => {
-                if (layers.length <= 1) return;
-                const nextLayers = layers.filter((l) => l.id !== id);
-                setLayers(nextLayers);
-                setActiveLayerId(nextLayers[0]?.id || '');
-
-                const newMap = new Map(layerCanvasesMap);
-                newMap.delete(id);
-                setLayerCanvasesMap(newMap);
-
-                pushHistorySnapshot('Delete Layer', newMap, nextLayers);
-                invokeTauri('delete_layer', { id });
-              }}
+              onToggleVisibility={handleToggleVisibility}
+              onChangeBlendMode={handleChangeBlendMode}
+              onChangeOpacity={handleChangeOpacity}
+              onAddLayer={handleAddLayer}
+              onAddGroup={handleAddGroup}
+              onDeleteLayer={handleDeleteLayer}
             />
           </div>
 
-          {/* History Panel */}
           <HistoryPanel
             undoSteps={undoSteps}
             redoSteps={redoSteps}
@@ -816,47 +902,32 @@ export const App: React.FC = () => {
       {/* 5. Status Bar */}
       <StatusBar width={docWidth} height={docHeight} zoom={zoom} />
 
-      {/* Modals & Dialogs */}
+      {/* Modals */}
       <CurvesModal
         isOpen={isCurvesOpen}
         onClose={() => setCurvesOpen(false)}
-        onApply={(data) => {
-          handleApplyFilter('Curves', data);
-        }}
+        onApply={(data) => handleApplyFilter('Curves', data)}
       />
-
       <LevelsModal
         isOpen={isLevelsOpen}
         onClose={() => setLevelsOpen(false)}
-        onApply={(data) => {
-          handleApplyFilter('Levels', data);
-        }}
+        onApply={(data) => handleApplyFilter('Levels', data)}
       />
-
       <HueSaturationModal
         isOpen={isHueSatOpen}
         onClose={() => setHueSatOpen(false)}
-        onApply={(data) => {
-          handleApplyFilter('Hue/Saturation', data);
-        }}
+        onApply={(data) => handleApplyFilter('Hue/Saturation', data)}
       />
-
       <FilterModal
         filterKind={activeFilterKind}
         onClose={() => setActiveFilterKind(null)}
-        onApply={(kind, settings) => {
-          handleApplyFilter(kind, settings);
-        }}
+        onApply={(kind, settings) => handleApplyFilter(kind, settings)}
       />
-
       <CameraRawModal
         isOpen={isCameraRawOpen}
         onClose={() => setCameraRawOpen(false)}
-        onApply={(settings) => {
-          handleApplyFilter('Camera Raw', settings);
-        }}
+        onApply={(settings) => handleApplyFilter('Camera Raw', settings)}
       />
-
       <NewDocModal
         isOpen={isNewDocOpen}
         onClose={() => setNewDocOpen(false)}
@@ -876,17 +947,13 @@ export const App: React.FC = () => {
             maskEnabled: false,
             hasEffects: false,
           };
-
           const newCanvas = document.createElement('canvas');
           newCanvas.width = w;
           newCanvas.height = h;
           const ctx = newCanvas.getContext('2d');
-          if (ctx) {
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, w, h);
-          }
+          if (ctx) { ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h); }
 
-          const newMap = new Map();
+          const newMap = new Map<string, HTMLCanvasElement>();
           newMap.set(newId, newCanvas);
           setLayerCanvasesMap(newMap);
           setLayers([newBg]);
@@ -910,20 +977,20 @@ export const App: React.FC = () => {
             activeLayerId: newId,
             canvases: cloneCanvasesMap(newMap),
           };
+          historyStackRef.current = [entry];
+          historyIndexRef.current = 0;
           setHistoryStack([entry]);
           setHistoryIndex(0);
-
           invokeTauri('new_document', { name, width: w, height: h });
         }}
       />
-
       <ExportModal
         isOpen={isExportOpen}
         onClose={() => setExportOpen(false)}
         onExport={handleExport}
       />
 
-      {/* Full-Screen Window Drag & Drop Overlay */}
+      {/* Full-screen drag-and-drop overlay (counter-based, no flicker) */}
       {isWindowDragging && (
         <div
           style={{

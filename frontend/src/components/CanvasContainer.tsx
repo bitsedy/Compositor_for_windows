@@ -131,7 +131,9 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
       }
     }
 
-    // 2. Render each visible layer from bottom to top
+    // 2. Render each visible layer from bottom to top.
+    // FIXED: draw at native 1:1 pixel size (not stretched to canvas.width/height).
+    // The CSS zoom/width/height on the wrapping <canvas> element handles visual scaling.
     for (const layer of layers) {
       if (!layer.isVisible) continue;
       const lCanvas = layerCanvases.get(layer.id);
@@ -140,7 +142,7 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
       ctx.save();
       ctx.globalAlpha = Math.max(0, Math.min(1, layer.opacity));
       ctx.globalCompositeOperation = getCompositeOp(layer.blendMode);
-      ctx.drawImage(lCanvas, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(lCanvas, 0, 0);
       ctx.restore();
     }
 
@@ -328,23 +330,30 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
     setSelectionStart(null);
   };
 
-  // Mouse wheel zoom centered on cursor
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    if (!containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+  // Mouse-wheel zoom centered on cursor.
+  // FIXED: Must be registered imperatively with { passive: false } so that
+  // e.preventDefault() actually suppresses browser scroll / pinch-zoom.
+  // React's synthetic onWheel prop cannot call preventDefault reliably.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
 
-    const factor = e.deltaY < 0 ? 1.15 : 0.85;
-    const newZoom = Math.min(32.0, Math.max(0.05, zoom * factor));
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.15 : 0.85;
+      const newZoom = Math.min(32.0, Math.max(0.05, zoom * factor));
+      const newPanX = mouseX - (mouseX - panX) * (newZoom / zoom);
+      const newPanY = mouseY - (mouseY - panY) * (newZoom / zoom);
+      onZoomChange(newZoom);
+      onPanChange(newPanX, newPanY);
+    };
 
-    const newPanX = mouseX - (mouseX - panX) * (newZoom / zoom);
-    const newPanY = mouseY - (mouseY - panY) * (newZoom / zoom);
-
-    onZoomChange(newZoom);
-    onPanChange(newPanX, newPanY);
-  };
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [zoom, panX, panY, onZoomChange, onPanChange]);
 
   // Drag and Drop Handling
   const handleDragOver = (e: React.DragEvent) => {
@@ -477,7 +486,6 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onWheel={handleWheel}
         >
           {/* Document Canvas Sheet with Photoshop Drop Shadow */}
           <div
