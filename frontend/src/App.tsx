@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { MenuBar } from './components/MenuBar';
 import { ToolOptionsBar } from './components/ToolOptionsBar';
 import { DocumentTabs } from './components/DocumentTabs';
@@ -20,6 +20,8 @@ import { ExportModal } from './components/modals/ExportModal';
 import { ToolKind, LayerItem, BrushSettings, PaletteColor } from './types';
 
 export const App: React.FC = () => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Active Tool & Settings
   const [activeTool, setActiveTool] = useState<ToolKind>('brush');
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({
@@ -54,7 +56,12 @@ export const App: React.FC = () => {
   const [activeTabId, setActiveTabId] = useState('doc-1');
   const [docWidth, setDocWidth] = useState(1920);
   const [docHeight, setDocHeight] = useState(1080);
-  const [zoom, setZoom] = useState(1.0);
+  const [zoom, setZoom] = useState(0.5);
+  const [panX, setPanX] = useState(80);
+  const [panY, setPanY] = useState(40);
+
+  // Selection
+  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
 
   // Layers State
   const [layers, setLayers] = useState<LayerItem[]>([
@@ -69,22 +76,14 @@ export const App: React.FC = () => {
       maskEnabled: false,
       hasEffects: false,
     },
-    {
-      id: 'layer-2',
-      name: 'Layer 1',
-      isVisible: true,
-      isGroup: false,
-      opacity: 1.0,
-      blendMode: 'Normal',
-      hasMask: false,
-      maskEnabled: false,
-      hasEffects: false,
-    },
   ]);
-  const [activeLayerId, setActiveLayerId] = useState('layer-2');
+  const [activeLayerId, setActiveLayerId] = useState('layer-1');
+
+  // Layer Bitmaps
+  const [layerCanvasesMap, setLayerCanvasesMap] = useState<Map<string, HTMLCanvasElement>>(new Map());
 
   // History State
-  const [undoSteps, setUndoSteps] = useState<string[]>(['Open Document', 'New Layer']);
+  const [undoSteps, setUndoSteps] = useState<string[]>(['New Document']);
   const [redoSteps, setRedoSteps] = useState<string[]>([]);
 
   // Modals Open State
@@ -95,6 +94,112 @@ export const App: React.FC = () => {
   const [isCameraRawOpen, setCameraRawOpen] = useState(false);
   const [isNewDocOpen, setNewDocOpen] = useState(false);
   const [isExportOpen, setExportOpen] = useState(false);
+
+  // Initialize initial white canvas for background layer
+  useEffect(() => {
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = 1920;
+    bgCanvas.height = 1080;
+    const ctx = bgCanvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, 1920, 1080);
+    }
+    const map = new Map();
+    map.set('layer-1', bgCanvas);
+    setLayerCanvasesMap(map);
+
+    // Initial center
+    const availW = window.innerWidth - 360;
+    const availH = window.innerHeight - 150;
+    const fitZ = Math.min(availW / 1920, availH / 1080, 0.6);
+    setZoom(fitZ);
+    setPanX(Math.round((availW - 1920 * fitZ) / 2));
+    setPanY(Math.round((availH - 1080 * fitZ) / 2));
+  }, []);
+
+  // IPC helpers with Tauri
+  const invokeTauri = async (cmd: string, args?: any) => {
+    if ((window as any).__TAURI_INTERNALS__) {
+      try {
+        const { invoke } = (window as any).__TAURI_INTERNALS__;
+        return await invoke(cmd, args);
+      } catch (err) {
+        console.error(`Tauri invoke error [${cmd}]:`, err);
+      }
+    }
+  };
+
+  // Image Loading Function (Core Solution for Bringing in Images)
+  const openImageFile = useCallback((file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target?.result as string;
+      if (!dataUrl) return;
+
+      const img = new Image();
+      img.onload = () => {
+        const w = img.width;
+        const h = img.height;
+
+        setDocWidth(w);
+        setDocHeight(h);
+
+        // Create new layer canvas with image pixels
+        const lCanvas = document.createElement('canvas');
+        lCanvas.width = w;
+        lCanvas.height = h;
+        const ctx = lCanvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0);
+        }
+
+        const newLayerId = `layer-${Date.now()}`;
+        const newLayer: LayerItem = {
+          id: newLayerId,
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          isVisible: true,
+          isGroup: false,
+          opacity: 1.0,
+          blendMode: 'Normal',
+          hasMask: false,
+          maskEnabled: false,
+          hasEffects: false,
+        };
+
+        const newMap = new Map();
+        newMap.set(newLayerId, lCanvas);
+        setLayerCanvasesMap(newMap);
+        setLayers([newLayer]);
+        setActiveLayerId(newLayerId);
+
+        // Auto-center and fit zoom
+        const availW = window.innerWidth - 360;
+        const availH = window.innerHeight - 150;
+        const fitZ = Math.min(availW / w, availH / h, 1.0);
+        setZoom(fitZ);
+        setPanX(Math.round((availW - w * fitZ) / 2));
+        setPanY(Math.round((availH - h * fitZ) / 2));
+
+        setTabs([{ id: `doc-${Date.now()}`, name: file.name, isDirty: false }]);
+        setUndoSteps([`Open ${file.name}`]);
+        setRedoSteps([]);
+        setSelection(null);
+
+        // Synchronize with Rust engine
+        invokeTauri('open_image_file', { path: (file as any).path || file.name });
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  }, []);
+
+  // Handle file input change
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      openImageFile(e.target.files[0]);
+    }
+  };
 
   // Keyboard Shortcuts (Photoshop parity)
   useEffect(() => {
@@ -110,11 +215,20 @@ export const App: React.FC = () => {
       } else if (ctrlOrCmd && e.key.toLowerCase() === 'y') {
         handleRedo();
         e.preventDefault();
+      } else if (ctrlOrCmd && e.key.toLowerCase() === 'o') {
+        fileInputRef.current?.click();
+        e.preventDefault();
       } else if (ctrlOrCmd && e.key.toLowerCase() === 's') {
         handleSave();
         e.preventDefault();
       } else if (ctrlOrCmd && e.key.toLowerCase() === 'n') {
         setNewDocOpen(true);
+        e.preventDefault();
+      } else if (ctrlOrCmd && e.key.toLowerCase() === 'a') {
+        setSelection({ x: 0, y: 0, width: docWidth, height: docHeight });
+        e.preventDefault();
+      } else if (ctrlOrCmd && e.key.toLowerCase() === 'd') {
+        setSelection(null);
         e.preventDefault();
       } else if (e.key.toLowerCase() === 'b') {
         setActiveTool('brush');
@@ -128,6 +242,8 @@ export const App: React.FC = () => {
         setActiveTool('wand');
       } else if (e.key.toLowerCase() === 'e') {
         setActiveTool('eraser');
+      } else if (e.key.toLowerCase() === 'i') {
+        setActiveTool('eyedropper');
       } else if (e.key.toLowerCase() === 'x') {
         handleSwapColors();
       } else if (e.key.toLowerCase() === 'd') {
@@ -141,19 +257,27 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [undoSteps, redoSteps]);
+  }, [undoSteps, redoSteps, docWidth, docHeight]);
 
-  // IPC helpers with Tauri
-  const invokeTauri = async (cmd: string, args?: any) => {
-    if ((window as any).__TAURI_INTERNALS__) {
-      try {
-        const { invoke } = (window as any).__TAURI_INTERNALS__;
-        return await invoke(cmd, args);
-      } catch (err) {
-        console.error(`Tauri invoke error [${cmd}]:`, err);
+  // Global Paste listener (paste image from clipboard)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (e.clipboardData && e.clipboardData.items) {
+        for (let i = 0; i < e.clipboardData.items.length; i++) {
+          const item = e.clipboardData.items[i];
+          if (item.type.indexOf('image') !== -1) {
+            const file = item.getAsFile();
+            if (file) {
+              openImageFile(file);
+              break;
+            }
+          }
+        }
       }
-    }
-  };
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [openImageFile]);
 
   const handleUndo = () => {
     if (undoSteps.length <= 1) return;
@@ -195,17 +319,108 @@ export const App: React.FC = () => {
     invokeTauri('set_active_tool', { tool });
   };
 
+  // Filter and Adjustment application directly on pixel buffer
+  const handleApplyFilter = (kind: string, settings?: any) => {
+    const lCanvas = layerCanvasesMap.get(activeLayerId);
+    if (!lCanvas) return;
+    const ctx = lCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const imgData = ctx.getImageData(0, 0, lCanvas.width, lCanvas.height);
+    const data = imgData.data;
+
+    if (kind === 'Invert') {
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = 255 - data[i];
+        data[i + 1] = 255 - data[i + 1];
+        data[i + 2] = 255 - data[i + 2];
+      }
+    } else if (kind === 'Black & White') {
+      for (let i = 0; i < data.length; i += 4) {
+        const gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        data[i] = gray;
+        data[i + 1] = gray;
+        data[i + 2] = gray;
+      }
+    } else if (kind === 'Add Noise') {
+      const amt = (settings?.amount || 15) * 2.55;
+      for (let i = 0; i < data.length; i += 4) {
+        const noise = (Math.random() - 0.5) * amt;
+        data[i] = Math.min(255, Math.max(0, data[i] + noise));
+        data[i + 1] = Math.min(255, Math.max(0, data[i + 1] + noise));
+        data[i + 2] = Math.min(255, Math.max(0, data[i + 2] + noise));
+      }
+    } else if (kind === 'Exposure') {
+      const exp = Math.pow(2, settings?.exposure || 0.5);
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = Math.min(255, Math.max(0, data[i] * exp));
+        data[i + 1] = Math.min(255, Math.max(0, data[i + 1] * exp));
+        data[i + 2] = Math.min(255, Math.max(0, data[i + 2] * exp));
+      }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+
+    const newMap = new Map(layerCanvasesMap);
+    newMap.set(activeLayerId, lCanvas);
+    setLayerCanvasesMap(newMap);
+
+    setUndoSteps((prev) => [...prev, kind]);
+    setRedoSteps([]);
+    invokeTauri('apply_filter_command', { kind, settings: settings || {} });
+  };
+
   const handleOpenFilterOrAdj = (kind: string) => {
     if (kind === 'Curves') setCurvesOpen(true);
     else if (kind === 'Levels') setLevelsOpen(true);
     else if (kind === 'Hue/Saturation') setHueSatOpen(true);
     else if (kind === 'Camera Raw') setCameraRawOpen(true);
-    else if (kind === 'Invert') {
-      invokeTauri('apply_filter', { kind: 'Invert', settings: {} });
-      setUndoSteps([...undoSteps, 'Invert']);
+    else if (kind === 'Invert' || kind === 'Black & White') {
+      handleApplyFilter(kind);
     } else {
       setActiveFilterKind(kind);
     }
+  };
+
+  // Export full composite image
+  const handleExport = (format: string, quality: number) => {
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = docWidth;
+    exportCanvas.height = docHeight;
+    const ctx = exportCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // Fill white for JPEG
+    if (format === 'jpeg') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, docWidth, docHeight);
+    }
+
+    // Composite all visible layers
+    for (const layer of layers) {
+      if (!layer.isVisible) continue;
+      const lCanvas = layerCanvasesMap.get(layer.id);
+      if (!lCanvas) continue;
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(lCanvas, 0, 0, docWidth, docHeight);
+    }
+
+    const mime = format === 'png' ? 'image/png' : 'image/jpeg';
+    const dataUrl = exportCanvas.toDataURL(mime, quality / 100);
+
+    // Trigger instant browser / desktop download
+    const link = document.createElement('a');
+    link.download = `${tabs[0]?.name || 'Artwork'}.${format === 'jpeg' ? 'jpg' : format}`;
+    link.href = dataUrl;
+    link.click();
+
+    invokeTauri('export_image', { format, quality });
+  };
+
+  const handleLayerCanvasUpdate = (layerId: string, updatedCanvas: HTMLCanvasElement) => {
+    const newMap = new Map(layerCanvasesMap);
+    newMap.set(layerId, updatedCanvas);
+    setLayerCanvasesMap(newMap);
   };
 
   return (
@@ -218,10 +433,19 @@ export const App: React.FC = () => {
         overflow: 'hidden',
       }}
     >
+      {/* Hidden File Input for Native Open Dialog */}
+      <input
+        type="file"
+        ref={fileInputRef}
+        accept="image/*,.comp,.psd,.psb,.tiff,.tif,.svg,.raw"
+        style={{ display: 'none' }}
+        onChange={handleFileInputChange}
+      />
+
       {/* 1. Menu Bar */}
       <MenuBar
         onNew={() => setNewDocOpen(true)}
-        onOpen={() => invokeTauri('open_project')}
+        onOpen={() => fileInputRef.current?.click()}
         onSave={handleSave}
         onExport={() => setExportOpen(true)}
         onUndo={handleUndo}
@@ -229,9 +453,9 @@ export const App: React.FC = () => {
         onCut={() => invokeTauri('clipboard_cut')}
         onCopy={() => invokeTauri('clipboard_copy')}
         onPaste={() => invokeTauri('clipboard_paste')}
-        onSelectAll={() => invokeTauri('select_all')}
-        onDeselect={() => invokeTauri('deselect')}
-        onInvertSelection={() => invokeTauri('invert_selection')}
+        onSelectAll={() => setSelection({ x: 0, y: 0, width: docWidth, height: docHeight })}
+        onDeselect={() => setSelection(null)}
+        onInvertSelection={() => setSelection({ x: 0, y: 0, width: docWidth, height: docHeight })}
         onOpenFilter={handleOpenFilterOrAdj}
         onOpenAdjustment={handleOpenFilterOrAdj}
       />
@@ -277,8 +501,34 @@ export const App: React.FC = () => {
         {/* Center Canvas */}
         <CanvasContainer
           documentName={tabs.find((t) => t.id === activeTabId)?.name || 'Untitled'}
+          docWidth={docWidth}
+          docHeight={docHeight}
+          layers={layers}
+          activeLayerId={activeLayerId}
+          activeTool={activeTool}
+          brushSettings={brushSettings}
+          foregroundColor={foregroundColor}
+          backgroundColor={backgroundColor}
           zoom={zoom}
           onZoomChange={setZoom}
+          panX={panX}
+          panY={panY}
+          onPanChange={(px, py) => {
+            setPanX(px);
+            setPanY(py);
+          }}
+          layerCanvases={layerCanvasesMap}
+          onLayerCanvasUpdate={handleLayerCanvasUpdate}
+          onColorSample={setForegroundColor}
+          selection={selection}
+          onSelectionChange={setSelection}
+          onDropFiles={(files) => {
+            if (files.length > 0) openImageFile(files[0]);
+          }}
+          onAddHistoryStep={(name) => {
+            setUndoSteps((prev) => [...prev, name]);
+            setRedoSteps([]);
+          }}
         />
 
         {/* Right Sidebar */}
@@ -318,7 +568,7 @@ export const App: React.FC = () => {
                 const newId = `layer-${Date.now()}`;
                 const newLayer: LayerItem = {
                   id: newId,
-                  name: `Layer ${layers.length}`,
+                  name: `Layer ${layers.length + 1}`,
                   isVisible: true,
                   isGroup: false,
                   opacity: 1.0,
@@ -327,6 +577,15 @@ export const App: React.FC = () => {
                   maskEnabled: false,
                   hasEffects: false,
                 };
+
+                const newCanvas = document.createElement('canvas');
+                newCanvas.width = docWidth;
+                newCanvas.height = docHeight;
+
+                const newMap = new Map(layerCanvasesMap);
+                newMap.set(newId, newCanvas);
+                setLayerCanvasesMap(newMap);
+
                 setLayers([newLayer, ...layers]);
                 setActiveLayerId(newId);
                 setUndoSteps([...undoSteps, 'New Layer']);
@@ -336,7 +595,7 @@ export const App: React.FC = () => {
                 const newId = `group-${Date.now()}`;
                 const newGroup: LayerItem = {
                   id: newId,
-                  name: `Group ${layers.length}`,
+                  name: `Group ${layers.length + 1}`,
                   isVisible: true,
                   isGroup: true,
                   opacity: 1.0,
@@ -353,7 +612,13 @@ export const App: React.FC = () => {
               onDeleteLayer={(id) => {
                 if (layers.length <= 1) return;
                 setLayers(layers.filter((l) => l.id !== id));
-                setActiveLayerId(layers.find((l) => l.id !== id)?.id || '');
+                const remaining = layers.filter((l) => l.id !== id);
+                setActiveLayerId(remaining[0]?.id || '');
+
+                const newMap = new Map(layerCanvasesMap);
+                newMap.delete(id);
+                setLayerCanvasesMap(newMap);
+
                 setUndoSteps([...undoSteps, 'Delete Layer']);
                 invokeTauri('delete_layer', { id });
               }}
@@ -380,8 +645,7 @@ export const App: React.FC = () => {
         isOpen={isCurvesOpen}
         onClose={() => setCurvesOpen(false)}
         onApply={(data) => {
-          invokeTauri('apply_filter', { kind: 'Curves', settings: data });
-          setUndoSteps([...undoSteps, 'Curves']);
+          handleApplyFilter('Curves', data);
         }}
       />
 
@@ -389,8 +653,7 @@ export const App: React.FC = () => {
         isOpen={isLevelsOpen}
         onClose={() => setLevelsOpen(false)}
         onApply={(data) => {
-          invokeTauri('apply_filter', { kind: 'Levels', settings: data });
-          setUndoSteps([...undoSteps, 'Levels']);
+          handleApplyFilter('Levels', data);
         }}
       />
 
@@ -398,8 +661,7 @@ export const App: React.FC = () => {
         isOpen={isHueSatOpen}
         onClose={() => setHueSatOpen(false)}
         onApply={(data) => {
-          invokeTauri('apply_filter', { kind: 'Hue/Saturation', settings: data });
-          setUndoSteps([...undoSteps, 'Hue/Saturation']);
+          handleApplyFilter('Hue/Saturation', data);
         }}
       />
 
@@ -407,8 +669,7 @@ export const App: React.FC = () => {
         filterKind={activeFilterKind}
         onClose={() => setActiveFilterKind(null)}
         onApply={(kind, settings) => {
-          invokeTauri('apply_filter', { kind, settings });
-          setUndoSteps([...undoSteps, kind]);
+          handleApplyFilter(kind, settings);
         }}
       />
 
@@ -416,8 +677,7 @@ export const App: React.FC = () => {
         isOpen={isCameraRawOpen}
         onClose={() => setCameraRawOpen(false)}
         onApply={(settings) => {
-          invokeTauri('apply_filter', { kind: 'Camera Raw', settings });
-          setUndoSteps([...undoSteps, 'Camera Raw']);
+          handleApplyFilter('Camera Raw', settings);
         }}
       />
 
@@ -427,7 +687,47 @@ export const App: React.FC = () => {
         onCreate={(name, w, h) => {
           setDocWidth(w);
           setDocHeight(h);
+
+          const newId = `layer-${Date.now()}`;
+          const newBg: LayerItem = {
+            id: newId,
+            name: 'Background',
+            isVisible: true,
+            isGroup: false,
+            opacity: 1.0,
+            blendMode: 'Normal',
+            hasMask: false,
+            maskEnabled: false,
+            hasEffects: false,
+          };
+
+          const newCanvas = document.createElement('canvas');
+          newCanvas.width = w;
+          newCanvas.height = h;
+          const ctx = newCanvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          const newMap = new Map();
+          newMap.set(newId, newCanvas);
+          setLayerCanvasesMap(newMap);
+          setLayers([newBg]);
+          setActiveLayerId(newId);
+
+          const availW = window.innerWidth - 360;
+          const availH = window.innerHeight - 150;
+          const fitZ = Math.min(availW / w, availH / h, 0.8);
+          setZoom(fitZ);
+          setPanX(Math.round((availW - w * fitZ) / 2));
+          setPanY(Math.round((availH - h * fitZ) / 2));
+
           setTabs([{ id: `doc-${Date.now()}`, name, isDirty: false }, ...tabs]);
+          setUndoSteps(['New Document']);
+          setRedoSteps([]);
+          setSelection(null);
+
           invokeTauri('new_document', { name, width: w, height: h });
         }}
       />
@@ -435,9 +735,7 @@ export const App: React.FC = () => {
       <ExportModal
         isOpen={isExportOpen}
         onClose={() => setExportOpen(false)}
-        onExport={(format, quality) => {
-          invokeTauri('export_image', { format, quality });
-        }}
+        onExport={handleExport}
       />
     </div>
   );

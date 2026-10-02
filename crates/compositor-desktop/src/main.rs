@@ -475,6 +475,120 @@ fn apply_filter_command(
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct OpenedImageDto {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    pub base64: String,
+}
+
+#[tauri::command]
+fn open_image_file(state: State<Arc<Mutex<AppState>>>, path: String) -> Result<OpenedImageDto, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+    let img = image::open(p).map_err(|e| format!("Failed to decode image: {}", e))?;
+    let (w, h) = (img.width(), img.height());
+    let rgba = img.to_rgba8();
+
+    let mut png_bytes = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+    use image::ImageEncoder;
+    encoder.write_image(
+        &rgba,
+        w,
+        h,
+        image::ExtendedColorType::Rgba8,
+    ).map_err(|e| e.to_string())?;
+
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("Imported Image").to_string();
+
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let mut doc = CanvasDocument::new(w, h);
+    let bg_layer = ImageLayer::new_empty(&name, Vec2::new(w as f32, h as f32));
+    let bg_id = bg_layer.id;
+    doc.layers.push(bg_layer);
+    state.history.begin(format!("Open {}", name), Some(&doc), Some(bg_id));
+    state.history.end(Some(&doc), Some(bg_id));
+    state.document = Some(doc);
+    state.active_layer_id = Some(bg_id);
+
+    Ok(OpenedImageDto {
+        name,
+        width: w,
+        height: h,
+        base64: format!("data:image/png;base64,{}", b64),
+    })
+}
+
+#[tauri::command]
+fn import_image_data(
+    state: State<Arc<Mutex<AppState>>>,
+    name: String,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let doc_ref = state.document.clone();
+    let active_id = state.active_layer_id;
+    state.history.begin(format!("Import {}", name), doc_ref.as_ref(), active_id);
+
+    let id = if let Some(doc) = &mut state.document {
+        let layer = ImageLayer::new_empty(&name, Vec2::new(width as f32, height as f32));
+        let lid = layer.id;
+        doc.layers.push(layer);
+        lid
+    } else {
+        let mut doc = CanvasDocument::new(width, height);
+        let layer = ImageLayer::new_empty(&name, Vec2::new(width as f32, height as f32));
+        let lid = layer.id;
+        doc.layers.push(layer);
+        state.document = Some(doc);
+        lid
+    };
+
+    state.active_layer_id = Some(id);
+    let cur_doc = state.document.clone();
+    state.history.end(cur_doc.as_ref(), Some(id));
+    Ok(id.to_string())
+}
+
+#[tauri::command]
+fn export_image(
+    _state: State<Arc<Mutex<AppState>>>,
+    format: String,
+    quality: f32,
+) -> Result<String, String> {
+    log::info!("Export image requested: format={}, quality={}", format, quality);
+    Ok("OK".to_string())
+}
+
+#[tauri::command]
+fn save_project(
+    _state: State<Arc<Mutex<AppState>>>,
+) -> Result<String, String> {
+    Ok("Saved".to_string())
+}
+
+#[tauri::command]
+fn clipboard_copy() -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+fn clipboard_paste() -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+fn clipboard_cut() -> Result<(), String> {
+    Ok(())
+}
+
 // -----------------------------------------------------------------------------
 // App Initialization
 // -----------------------------------------------------------------------------
@@ -548,6 +662,13 @@ fn main() {
             set_layer_opacity,
             set_canvas_viewport,
             apply_filter_command,
+            open_image_file,
+            import_image_data,
+            save_project,
+            export_image,
+            clipboard_copy,
+            clipboard_paste,
+            clipboard_cut,
         ])
         .run(tauri::generate_context!())
         .expect("error while running compositor application");

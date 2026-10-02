@@ -595,6 +595,7 @@ name = "compositor-desktop"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "compositor-ai",
  "compositor-core",
  "compositor-gpu",
@@ -602,6 +603,7 @@ dependencies = [
  "compositor-pixel",
  "env_logger",
  "glam",
+ "image",
  "log",
  "raw-window-handle",
  "serde",
