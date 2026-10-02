@@ -21,7 +21,7 @@ interface CanvasContainerProps {
   onColorSample: (color: PaletteColor) => void;
   selection: { x: number; y: number; width: number; height: number } | null;
   onSelectionChange: (sel: { x: number; y: number; width: number; height: number } | null) => void;
-  onDropFiles: (files: FileList) => void;
+  onDropFiles?: (files: FileList) => void;
   onAddHistoryStep: (name: string) => void;
 }
 
@@ -43,12 +43,10 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
   onColorSample,
   selection,
   onSelectionChange,
-  onDropFiles,
   onAddHistoryStep,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
   const [isPointerDown, setIsPointerDown] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -355,28 +353,6 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
     return () => container.removeEventListener('wheel', handleWheel);
   }, [zoom, panX, panY, onZoomChange, onPanChange]);
 
-  // Drag and Drop Handling
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDraggingFile(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      onDropFiles(e.dataTransfer.files);
-    }
-  };
-
   // Cursor style
   const getCursorStyle = () => {
     if (isSpacePressed || isPanning || activeTool === 'hand') return 'grab';
@@ -400,9 +376,6 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
         flexDirection: 'column',
         userSelect: 'none',
       }}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
     >
       {/* 1. Horizontal Top Ruler */}
       <div
@@ -527,31 +500,6 @@ export const CanvasContainer: React.FC<CanvasContainerProps> = ({
                 zIndex: 9999,
               }}
             />
-          )}
-
-          {/* Drag & Drop Visual Overlay */}
-          {isDraggingFile && (
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                backgroundColor: 'rgba(0, 120, 215, 0.3)',
-                border: '3px dashed #0078d7',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#ffffff',
-                fontSize: 18,
-                fontWeight: 'bold',
-                zIndex: 100,
-                pointerEvents: 'none',
-              }}
-            >
-              <div style={{ padding: '16px 32px', backgroundColor: 'rgba(20, 20, 20, 0.9)', borderRadius: 8 }}>
-                Drop image to open in Compositor
-              </div>
-            </div>
           )}
         </div>
       </div>

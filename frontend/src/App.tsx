@@ -36,10 +36,14 @@ interface HistoryEntry {
 // ---------------------------------------------------------------------------
 const cloneCanvas = (src: HTMLCanvasElement): HTMLCanvasElement => {
   const copy = document.createElement('canvas');
-  copy.width = src.width;
-  copy.height = src.height;
+  copy.width = Math.max(1, src.width || 1);
+  copy.height = Math.max(1, src.height || 1);
   const ctx = copy.getContext('2d');
-  if (ctx) ctx.drawImage(src, 0, 0);
+  if (ctx && src.width > 0 && src.height > 0) {
+    try {
+      ctx.drawImage(src, 0, 0);
+    } catch (_) {}
+  }
   return copy;
 };
 
@@ -238,11 +242,17 @@ export const App: React.FC = () => {
   // ── Open / load image file ────────────────────────────────────────────────
   const openImageFile = useCallback((file: File) => {
     const reader = new FileReader();
+    reader.onerror = () => {
+      console.error('Failed to read file:', file.name);
+    };
     reader.onload = (e) => {
       const dataUrl = e.target?.result as string;
       if (!dataUrl) return;
 
       const img = new Image();
+      img.onerror = () => {
+        console.error('Failed to decode image file:', file.name);
+      };
       img.onload = () => {
         const w = img.width;
         const h = img.height;
@@ -319,10 +329,10 @@ export const App: React.FC = () => {
     }
   };
 
-  // ── Window-wide drag-and-drop (FIXED: counter-based, not boolean) ─────────
-  // Using a dragCounter instead of a boolean prevents flickering when the mouse
-  // crosses child element boundaries inside WebView2.  dragenter increments,
-  // dragleave decrements; overlay is shown when counter > 0.
+  // ── Window-wide drag-and-drop ─────────────────────────────────────────────
+  // Using a dragCounter prevents flickering when the mouse crosses child
+  // element boundaries inside WebView2.  dragenter increments, dragleave decrements.
+  // dragend and drop always reset counter to 0.
   useEffect(() => {
     const onDragEnter = (e: DragEvent) => {
       e.preventDefault();
@@ -335,26 +345,35 @@ export const App: React.FC = () => {
     };
     const onDragLeave = (e: DragEvent) => {
       e.preventDefault();
-      setDragCounter((c) => Math.max(0, c - 1));
+      if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+        setDragCounter(0);
+      } else {
+        setDragCounter((c) => Math.max(0, c - 1));
+      }
     };
     const onDrop = (e: DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      setDragCounter(0); // always reset on drop
+      setDragCounter(0);
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
         openImageFile(e.dataTransfer.files[0]);
       }
+    };
+    const onDragEnd = () => {
+      setDragCounter(0);
     };
 
     window.addEventListener('dragenter', onDragEnter);
     window.addEventListener('dragover', onDragOver);
     window.addEventListener('dragleave', onDragLeave);
     window.addEventListener('drop', onDrop);
+    window.addEventListener('dragend', onDragEnd);
     return () => {
       window.removeEventListener('dragenter', onDragEnter);
       window.removeEventListener('dragover', onDragOver);
       window.removeEventListener('dragleave', onDragLeave);
       window.removeEventListener('drop', onDrop);
+      window.removeEventListener('dragend', onDragEnd);
     };
   }, [openImageFile]);
 
@@ -710,7 +729,7 @@ export const App: React.FC = () => {
     const nextLayers = [newLayer, ...layers];
     setLayers(nextLayers);
     setActiveLayerId(newId);
-    pushHistorySnapshot('New Layer', newMap, nextLayers);
+    pushHistorySnapshot('New Layer', newMap, nextLayers, docWidth, docHeight, newId);
     invokeTauri('add_layer');
   }, [docWidth, docHeight, layers, layerCanvasesMap, pushHistorySnapshot]);
 
@@ -730,21 +749,22 @@ export const App: React.FC = () => {
     const nextLayers = [newGroup, ...layers];
     setLayers(nextLayers);
     setActiveLayerId(newId);
-    pushHistorySnapshot('New Group', undefined, nextLayers);
+    pushHistorySnapshot('New Group', undefined, nextLayers, docWidth, docHeight, newId);
     invokeTauri('add_group');
-  }, [layers, pushHistorySnapshot]);
+  }, [docWidth, docHeight, layers, pushHistorySnapshot]);
 
   const handleDeleteLayer = useCallback((id: string) => {
     if (layers.length <= 1) return;
     const nextLayers = layers.filter((l) => l.id !== id);
+    const nextActive = nextLayers[0]?.id || '';
     setLayers(nextLayers);
-    setActiveLayerId(nextLayers[0]?.id || '');
+    setActiveLayerId(nextActive);
     const newMap = new Map(layerCanvasesMap);
     newMap.delete(id);
     setLayerCanvasesMap(newMap);
-    pushHistorySnapshot('Delete Layer', newMap, nextLayers);
+    pushHistorySnapshot('Delete Layer', newMap, nextLayers, docWidth, docHeight, nextActive);
     invokeTauri('delete_layer', { id });
-  }, [layers, layerCanvasesMap, pushHistorySnapshot]);
+  }, [docWidth, docHeight, layers, layerCanvasesMap, pushHistorySnapshot]);
 
   const handleToggleVisibility = useCallback((id: string) => {
     const nextLayers = layers.map((l) => (l.id === id ? { ...l, isVisible: !l.isVisible } : l));

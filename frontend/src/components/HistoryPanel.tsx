@@ -60,11 +60,13 @@ export const HistoryPanel: React.FC<HistoryPanelProps> = ({
         {redoSteps.map((step, idx) => (
           <div
             key={`redo-${idx}`}
+            onClick={() => onJumpToState(undoSteps.length + idx)}
             style={{
               padding: '4px 10px',
               display: 'flex',
               alignItems: 'center',
               gap: 8,
+              cursor: 'pointer',
               color: 'var(--text-muted)',
               fontStyle: 'italic',
             }}
